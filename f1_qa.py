@@ -719,6 +719,33 @@ def query_data(question, dfs):
             lines="\n".join("  {}: {} win{}".format(d,c,'s' if c!=1 else '') for d,c in non_champ_wins.head(5).items())
             return "Most race wins without ever winning a World Championship:\n{}".format(lines)
 
+    # ── 26e. LARGEST CHAMPIONSHIP DEFICIT SUCCESSFULLY CHASED ─────────────
+    # e.g. "what is the largest points deficit chased in drivers championship"
+    if any(w in q for w in ['deficit','defecit','comeback','chased','overturned','come from behind']) and any(w in q for w in ['championship','title','champion','points']):
+        champ_list=ds[ds['Pos']=='1'][['Driver','Year']].values.tolist()
+        deficit_results=[]
+        for champ_driver,yr in champ_list:
+            yr_data=dd[dd['Year']==yr].copy()
+            yr_data['_Date']=pd.to_datetime(yr_data['Date'],format='%d %b %Y',errors='coerce')
+            yr_data=yr_data.dropna(subset=['_Date']).sort_values('_Date')
+            race_dates=sorted(yr_data['_Date'].unique())
+            cum_pts={}; max_deficit=0; max_deficit_gp=None
+            for rd2 in race_dates:
+                for _,row in yr_data[yr_data['_Date']==rd2].iterrows():
+                    cum_pts[row['Driver']]=cum_pts.get(row['Driver'],0)+row['PTS']
+                if champ_driver in cum_pts:
+                    leader_pts=max(cum_pts.values())
+                    deficit=leader_pts-cum_pts[champ_driver]
+                    if deficit>max_deficit:
+                        max_deficit=deficit
+                        max_deficit_gp=yr_data[yr_data['_Date']==rd2].iloc[0]['Grand Prix']
+            if max_deficit>0:
+                deficit_results.append((max_deficit,champ_driver,yr,max_deficit_gp))
+        deficit_results.sort(key=lambda x:-x[0])
+        if deficit_results:
+            lines="\n".join("  {} ({}): overcame {:.0f} pts deficit (after {} GP)".format(d,int(y),g,gp) for g,d,y,gp in deficit_results[:5])
+            return "Largest championship points deficits successfully overturned:\n{}".format(lines)
+
     # ── 27. DRIVER CHAMPIONSHIPS ──────────────────────────────────────────
     if any(w in q for w in ['championship','world champion','title','wdc']) and not any(w in q for w in ['constructor','team','wcc']) and not team:
         if year:

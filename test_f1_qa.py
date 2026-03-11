@@ -290,7 +290,9 @@ class TestOutsidePoints:
         assert result is not None
         assert "Hamilton" in result
         assert "outside the points" in result.lower()
-        assert int(re.search(r'(\d+) times', result).group(1)) > 0
+        m = re.search(r'(\d+) times', result)
+        assert m is not None, "Expected 'N times' in result"
+        assert int(m.group(1)) > 0
 
 
 # ── Least points with race threshold ───────────────────────────────────
@@ -346,7 +348,9 @@ class TestQualifyingExits:
         result = query_data("who had the most Q3 exits", dfs)
         assert result is not None
         assert "Q3" in result
-        assert "Hamilton" in result  # should be top
+        # Hamilton has the most Q3 appearances in the dataset
+        lines = result.strip().split('\n')
+        assert "Hamilton" in lines[1]  # first entry after header
 
     def test_most_q1_exits(self, dfs):
         result = query_data("who had the most Q1 exits", dfs)
@@ -377,3 +381,18 @@ class TestTeammateGap:
         assert result is not None
         assert "teammate" in result.lower() or "vs" in result.lower()
         assert "pts" in result.lower()
+
+
+# ── Championship deficit / comeback ────────────────────────────────────
+
+class TestChampionshipDeficit:
+    def test_largest_deficit_chased(self, dfs):
+        result = query_data("what is the largest points deficit successfully chased by a driver in drivers championship", dfs)
+        assert result is not None
+        assert "deficit" in result.lower()
+        assert "overcame" in result.lower()
+
+    def test_biggest_comeback(self, dfs):
+        result = query_data("biggest championship comeback", dfs)
+        assert result is not None
+        assert "deficit" in result.lower()
