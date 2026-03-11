@@ -282,6 +282,20 @@ def query_data(question, dfs):
         top = merged.groupby('Driver').size().sort_values(ascending=False)
         return "{} has won the most races from pole with {}.".format(top.index[0], top.iloc[0])
 
+    # ── 2a. WINS FROM LOW GRID POSITION ─────────────────────────────────
+    if any(w in q for w in ['starting from','won from','won a race starting','won starting','won a race from','won from position']):
+        m_pos=re.search(r'(\d+)(?:th|st|nd|rd)?',q)
+        threshold=int(m_pos.group(1)) if m_pos else 10
+        merged=rs.merge(sg,left_on=['Year','Grand Prix','Winner'],right_on=['Year','Grand Prix','Driver'],how='inner')
+        merged['Pos']=pd.to_numeric(merged['Pos'],errors='coerce')
+        low_start_wins=merged[merged['Pos']>=threshold].sort_values('Pos',ascending=False)
+        if len(low_start_wins):
+            top=low_start_wins.iloc[0]
+            count=len(low_start_wins)
+            return "{} races have been won by drivers starting P{} or lower. The lowest grid start for a winner was P{} by {} at the {} {} Grand Prix.".format(
+                count,threshold,int(top['Pos']),top['Winner'],int(top['Year']),top['Grand Prix'])
+        return "No driver has won a race starting from P{} or lower in this dataset.".format(threshold)
+
     # ── 3. WHICH NATIONALITY HAS WON MOST RACES ──────────────────────────
     if any(w in q for w in ['which nationality','what nationality has','nationality has won','nationality won most']):
         nat_wins = rs.merge(ds[['Driver','Nationality']].drop_duplicates(), left_on='Winner', right_on='Driver', how='left')
@@ -373,6 +387,22 @@ def query_data(question, dfs):
         top=rs.groupby(['Year','Winner']).size().reset_index(name='W').sort_values('W',ascending=False).iloc[0]
         return "{} holds the record with {} wins in the {} season.".format(top['Winner'], top['W'], int(top['Year']))
 
+    # ── 11a. WINNING MARGIN ──────────────────────────────────────────────
+    if any(w in q for w in ['winning margin','biggest margin','largest margin','biggest gap','largest gap','margin of victory']):
+        try:
+            p2=rd[pd.to_numeric(rd['Pos'],errors='coerce')==2].copy()
+            p2['Gap']=pd.to_numeric(p2['Time'].astype(str).str.replace('+','',regex=False).str.strip(),errors='coerce')
+            valid=p2[p2['Gap']>0].dropna(subset=['Gap'])
+            if len(valid):
+                best=valid.loc[valid['Gap'].idxmax()]
+                winner_row=rs[(rs['Year']==int(best['Year']))&rs['Grand Prix'].str.contains(str(best['Grand Prix']),case=False,na=False)]
+                winner=winner_row.iloc[0]['Winner'] if len(winner_row) else 'Unknown'
+                return "The biggest winning margin (by time gap) was {:.3f}s at the {} {} Grand Prix, won by {}.".format(
+                    best['Gap'],int(best['Year']),best['Grand Prix'],winner)
+        except Exception:
+            pass
+        return "Winning margin data is not directly available in this dataset."
+
     # ── 12. MOST POINTS IN A SEASON ──────────────────────────────────────
     if any(w in q for w in ['most points in a season','most points ever in a season','highest points in a season',
                              'record points in a season','most points scored in a season']):
@@ -380,13 +410,19 @@ def query_data(question, dfs):
         return "{} scored the most points in a single season: {:.0f} points in {}.".format(top['Driver'], top['PTS'], top['Year'])
 
     # ── 13. LONGEST WINNING STREAK ────────────────────────────────────────
-    if any(w in q for w in ['longest winning streak','consecutive wins','consecutive victories','winning streak','most consecutive']):
+    if not gp and any(w in q for w in ['longest winning streak','consecutive wins','consecutive victories','winning streak','most consecutive','in a row','races in a row']):
         seq=rs.sort_values(['Year','Grand Prix'])['Winner'].tolist()
         max_s=cur=1; name=prev=seq[0]
         for w in seq[1:]:
             cur=cur+1 if w==prev else 1
             if cur>max_s: max_s=cur; name=w
             prev=w
+        m_n=re.search(r'(?:more than|over|at least|exceed)\s+(\d+)',q)
+        if m_n:
+            threshold=int(m_n.group(1))
+            if max_s>threshold:
+                return "Yes — {} won {} consecutive races, which is more than {}.".format(name, max_s, threshold)
+            return "No — the longest winning streak is {} consecutive wins by {}, which is not more than {}.".format(max_s, name, threshold)
         return "{} holds the record with {} consecutive race wins.".format(name, max_s)
 
     # ── 14. HEAD TO HEAD ─────────────────────────────────────────────────
@@ -407,6 +443,16 @@ def query_data(question, dfs):
         lines="\n".join("  {}: {}".format(n,c) for n,c in top.items())
         return "Teams with the most F1 wins (all time):\n{}".format(lines)
 
+    # ── 15a. TEAM WIN PERCENTAGE ─────────────────────────────────────────
+    if any(w in q for w in ['win%','win percentage','win rate','highest win rate','best win rate','highest win%','dominat']):
+        team_year=rs.groupby(['Year','Car']).size().reset_index(name='Wins')
+        races_per_year=rs.groupby('Year').size().reset_index(name='TotalRaces')
+        team_year=team_year.merge(races_per_year,on='Year')
+        team_year['WinPct']=team_year['Wins']/team_year['TotalRaces']*100
+        best=team_year.loc[team_year['WinPct'].idxmax()]
+        return "{} had the highest win rate in {} — winning {} of {} races ({:.1f}%).".format(
+            best['Car'],int(best['Year']),int(best['Wins']),int(best['TotalRaces']),best['WinPct'])
+
     # ── 16. HOW MANY TIMES HAS A GP BEEN HELD ────────────────────────────
     if any(w in q for w in ['how many times has','how often has','how many editions','how many times the','how many times a']) and gp:
         sub=rs[rs['Grand Prix'].str.contains(gp,case=False,na=False)]
@@ -424,14 +470,45 @@ def query_data(question, dfs):
         r=rs[rs['Year']==year].iloc[0]
         return "The first race of {} was the {} Grand Prix, won by {} ({}).".format(year, r['Grand Prix'], r['Winner'], r['Car'])
 
+    # ── 19a. LAST TO FIRST / WON FROM THE BACK ──────────────────────────
+    if any(w in q for w in ['last to first','from last','from the back','back of the grid','last on the grid','from dead last']):
+        merged=rs.merge(sg,left_on=['Year','Grand Prix','Winner'],right_on=['Year','Grand Prix','Driver'],how='inner')
+        merged['Pos']=pd.to_numeric(merged['Pos'],errors='coerce')
+        merged=merged.dropna(subset=['Pos'])
+        if len(merged):
+            worst_start=merged.sort_values('Pos',ascending=False).iloc[0]
+            return "{} won the {} {} Grand Prix starting from P{} — the lowest grid position for a race winner in F1.".format(
+                worst_start['Winner'],int(worst_start['Year']),worst_start['Grand Prix'],int(worst_start['Pos']))
+
     # ── 19. FIRST EVER F1 RACE – fires ONLY when no driver/GP/year context ─
     if 'first' in q and not gp and not year and not drivers and any(w in q for w in ['ever','f1','formula 1','formula one']):
         r=rs.sort_values('Year').iloc[0]
         return "The first ever F1 race was won by {} ({}) at the {} {} Grand Prix.".format(r['Winner'], r['Car'], r['Year'], r['Grand Prix'])
 
+    # ── 20a. CONSECUTIVE WINS AT SPECIFIC GP ─────────────────────────────
+    if gp and any(w in q for w in ['in a row','consecutive','back to back','twice in a row','three in a row','row at']):
+        sub=rs[rs['Grand Prix'].str.contains(gp,case=False,na=False)].sort_values('Year')
+        if len(sub)>1:
+            max_s=cur=1; name=prev=sub.iloc[0]['Winner']
+            for _,r in sub.iloc[1:].iterrows():
+                w=r['Winner']
+                cur=cur+1 if w==prev else 1
+                if cur>max_s: max_s=cur; name=w
+                prev=w
+            threshold=None
+            m_n=re.search(r'(?:more than|over|at least)\s+(\d+)',q)
+            if m_n: threshold=int(m_n.group(1))
+            if 'twice' in q: threshold=2
+            if threshold:
+                if max_s>=threshold:
+                    return "Yes — {} won the {} Grand Prix {} times in a row.".format(name,gp,max_s)
+                return "No — the longest consecutive win streak at the {} Grand Prix is {} by {}.".format(gp,max_s,name)
+            return "{} holds the record with {} consecutive wins at the {} Grand Prix.".format(name,max_s,gp)
+
     # ── 20. DRIVER WINS AT SPECIFIC GP ───────────────────────────────────
     if gp and len(drivers)==1 and 'podium' not in q and (any(w in q for w in ['when did','when has','how many times','how often',
-        'times did','times has','has','have','ever won','ever win','did win']) or q.split()[0]=='did'):
+        'times did','times has','has','have','ever won','ever win','did win']) or q.split()[0]=='did'
+        or ('how many' in q and any(w in q for w in ['win','wins','won']))):
         d=drivers[0]; rows=dmatch(rs,'Winner',d)
         rows=rows[rows['Grand Prix'].str.contains(gp,case=False,na=False)].sort_values('Year')
         if len(rows):
@@ -572,6 +649,20 @@ def query_data(question, dfs):
             if len(rows): return "{} set the fastest lap at the {} {} Grand Prix ({}).".format(rows.iloc[0]['Driver'],year,gp,rows.iloc[0]['Time'])
         top=fl.groupby('Driver').size().sort_values(ascending=False)
         return "{} holds the record for most fastest laps with {}.".format(top.index[0], top.iloc[0])
+
+    # ── 30a. MULTIPLE PITSTOPS IN A SINGLE RACE ─────────────────────────
+    if any(w in q for w in ['pitted more than','pit more than','pitstops in a single','pit stops in a single',
+                             'pits in a single','pitted','multiple pit']):
+        m_n=re.search(r'(?:more than|over|exceed)\s+(\d+)',q)
+        threshold=int(m_n.group(1)) if m_n else 3
+        counts=ps.groupby(['Year','Grand Prix','Driver']).size().reset_index(name='Stops')
+        over=counts[counts['Stops']>threshold]
+        if len(over):
+            top=over.sort_values('Stops',ascending=False).iloc[0]
+            total=len(over)
+            return "Yes — {} instances of drivers making more than {} pitstops in a single race. The most was {} stops by {} at the {} {} Grand Prix.".format(
+                total,threshold,int(top['Stops']),top['Driver'],int(top['Year']),top['Grand Prix'])
+        return "No driver has made more than {} pitstops in a single race in this dataset (data from 1994).".format(threshold)
 
     # ── 30. PITSTOPS ──────────────────────────────────────────────────────
     if any(w in q for w in ['pitstop','pit stop','pit-stop','pitstops','pit stops']):
@@ -847,6 +938,19 @@ def query_data(question, dfs):
         p2=rd[(rd['Driver'].str.contains(r'\b'+re.escape(last2)+r'\b',case=False,na=False,regex=True)) & (pd.to_numeric(rd['Pos'],errors='coerce')<=3)].set_index(['Year','Grand Prix'])
         shared=p1.index.intersection(p2.index)
         return "{} and {} shared the podium {} time{} in this dataset.".format(d1,d2,len(shared),'s' if len(shared)!=1 else '')
+
+    # ── 59a. LATEST / FIRST WIN FOR A DRIVER ────────────────────────────
+    if len(drivers)==1 and not year and not gp and (
+        any(w in q for w in ['last win','latest win','most recent win','last victory','most recent victory',
+                              'first win','first victory','last race won','latest victory']) or
+        (any(w in q for w in ['last','latest','most recent','first','earliest']) and any(w in q for w in ['win','won','victory']))):
+        d=drivers[0]; sub=dmatch(rs,'Winner',d)
+        if not len(sub):
+            return "No wins found for {} in this dataset.".format(d)
+        asc='first' in q or 'earliest' in q
+        r=sub.sort_values('Year',ascending=asc).iloc[0]
+        label='first' if asc else 'most recent'
+        return "The {} win for {} was the {} {} Grand Prix, driving for {}.".format(label,d,int(r['Year']),r['Grand Prix'],r['Car'])
 
     # ── 59. LATEST / FIRST WIN FOR A TEAM ────────────────────────────────
     if team and any(w in q for w in ['latest win','most recent win','last win','last victory','most recent victory','when did','when was','first win','first victory','earliest win','when was the']):
