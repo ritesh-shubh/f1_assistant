@@ -391,7 +391,7 @@ def query_data(question, dfs):
     if any(w in q for w in ['winning margin','biggest margin','largest margin','biggest gap','largest gap','margin of victory']):
         try:
             p2=rd[pd.to_numeric(rd['Pos'],errors='coerce')==2].copy()
-            p2['Gap']=pd.to_numeric(p2['Time'].astype(str).str.replace('+','',regex=False).str.strip(),errors='coerce')
+            p2['Gap']=pd.to_numeric(p2['Time/Retired'].astype(str).str.replace('+','',regex=False).str.replace('s','',regex=False).str.strip(),errors='coerce')
             valid=p2[p2['Gap']>0].dropna(subset=['Gap'])
             if len(valid):
                 best=valid.loc[valid['Gap'].idxmax()]
@@ -471,7 +471,7 @@ def query_data(question, dfs):
         return "The first race of {} was the {} Grand Prix, won by {} ({}).".format(year, r['Grand Prix'], r['Winner'], r['Car'])
 
     # ── 19a. LAST TO FIRST / WON FROM THE BACK ──────────────────────────
-    if any(w in q for w in ['last to first','from last','from the back','back of the grid','last on the grid','from dead last']):
+    if any(w in q for w in ['last to first','lsat to first','from last','from the back','back of the grid','last on the grid','from dead last']):
         merged=rs.merge(sg,left_on=['Year','Grand Prix','Winner'],right_on=['Year','Grand Prix','Driver'],how='inner')
         merged['Pos']=pd.to_numeric(merged['Pos'],errors='coerce')
         merged=merged.dropna(subset=['Pos'])
