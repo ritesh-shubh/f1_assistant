@@ -61,6 +61,13 @@ def extract_year(q):
     m = re.search(r'\b(19[5-9]\d|200\d|201\d|202[0-2])\b', q)
     return int(m.group()) if m else None
 
+def extract_year_range(q):
+    """Extract a year range like 'from 2016 to 2020' or 'between 2010 and 2015'."""
+    m = re.search(r'(?:from|between)\s+(19[5-9]\d|200\d|201\d|202[0-2])\s+(?:to|and)\s+(19[5-9]\d|200\d|201\d|202[0-2])', q)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return None, None
+
 def extract_decade(q):
     m = re.search(r'\b(19[5-9]0s|200[0-9]s|2010s|2020s)\b', q)
     if m:
@@ -244,6 +251,7 @@ def query_data(question, dfs):
     dd = dfs['driver_details']
 
     year          = extract_year(q)
+    yr_start, yr_end = extract_year_range(q)
     dec_s, dec_e, dec_str = extract_decade(q)
     drivers       = extract_drivers(q)
     team          = extract_team(q)
@@ -515,12 +523,60 @@ def query_data(question, dfs):
             return "{} won the {} Grand Prix {} time{} ({}).".format(d, gp, len(rows), 's' if len(rows)!=1 else '', ', '.join(str(y) for y in rows['Year']))
         return "{} has never won the {} Grand Prix in this dataset (1950-2022).".format(d, gp)
 
+    # ── 20c. ONLY DRIVER/TEAM TO WIN A SPECIFIC GP ──────────────────────
+    # e.g. "who is the only driver to win the miami grand prix"
+    if gp and any(w in q for w in ['only driver','only team','only person','only one to']):
+        if 'team' in q or 'constructor' in q:
+            winners=rs[rs['Grand Prix'].str.contains(gp,case=False,na=False)].groupby('Car').size()
+            if len(winners)==1:
+                return "{} is the only team to have won the {} Grand Prix.".format(winners.index[0],gp)
+            return "Multiple teams have won the {} Grand Prix ({} different teams).".format(gp,len(winners))
+        winners=rs[rs['Grand Prix'].str.contains(gp,case=False,na=False)].groupby('Winner').size()
+        if len(winners)==1:
+            return "{} is the only driver to have won the {} Grand Prix.".format(winners.index[0],gp)
+        return "Multiple drivers have won the {} Grand Prix ({} different winners).".format(gp,len(winners))
+
+    # ── 20d. WON BOTH X AND Y GPs ────────────────────────────────────────
+    # e.g. "who has won both the monaco and british grand prix"
+    if 'both' in q and 'and' in q and any(w in q for w in ['won both','won the','winner of both']):
+        parts=q.split(' and ')
+        gp_names=[]
+        for part in parts:
+            g=extract_gp(part.strip(), rs)
+            if g and g not in gp_names: gp_names.append(g)
+        if len(gp_names)>=2:
+            winner_sets=[set(rs[rs['Grand Prix'].str.contains(g,case=False,na=False)]['Winner'].unique()) for g in gp_names]
+            common=winner_sets[0]
+            for s in winner_sets[1:]: common=common&s
+            common=sorted(common)
+            if common:
+                lines="\n".join("  {}".format(d) for d in common[:15])
+                return "Drivers who have won both the {} Grand Prix:\n{}".format(' and '.join(gp_names),lines)
+            return "No driver has won both the {} Grand Prix.".format(' and '.join(gp_names))
+
     # ── 21. MOST WINS AT SPECIFIC GP ─────────────────────────────────────
     if gp and any(w in q for w in ['most','who has won','who won most','which driver']):
         top=rs[rs['Grand Prix'].str.contains(gp,case=False,na=False)].groupby('Winner').size().sort_values(ascending=False)
         if len(top):
             lines="\n".join("  {}: {} win{}".format(n,c,'s' if c!=1 else '') for n,c in top.head(5).items())
             return "Most wins at the {} Grand Prix:\n{}".format(gp, lines)
+
+    # ── 21b. NEVER WON CHAMPIONSHIP BUT WON GP ──────────────────────────
+    # e.g. "who has never won a championship but has won the monaco grand prix"
+    if 'never' in q and any(w in q for w in ['championship','title','wdc']) and any(w in q for w in ['won','win']) and 'most wins' not in q and 'most race wins' not in q:
+        champs=set(ds[ds['Pos']=='1']['Driver'].unique())
+        if gp:
+            gp_winners=set(rs[rs['Grand Prix'].str.contains(gp,case=False,na=False)]['Winner'].unique())
+            non_champ_winners=sorted(gp_winners-champs)
+            if non_champ_winners:
+                lines="\n".join("  {}".format(d) for d in non_champ_winners[:15])
+                return "Drivers who won the {} Grand Prix but never won a World Championship:\n{}".format(gp,lines)
+            return "All {} Grand Prix winners in this dataset also won a World Championship.".format(gp)
+        all_winners=set(rs['Winner'].unique())
+        non_champ_winners=sorted(all_winners-champs)
+        if non_champ_winners:
+            lines="\n".join("  {}".format(d) for d in non_champ_winners[:20])
+            return "Drivers who won races but never won a World Championship:\n{}".format(lines)
 
     # ── 22. RACE WINNER ───────────────────────────────────────────────────
     if any(w in q for w in ['who won','winner of','win the','won the']) and not any(w in q for w in ['most','constructor']):
@@ -536,7 +592,9 @@ def query_data(question, dfs):
             return "{} winners at {}:\n".format("Oldest" if asc else "Recent", gp)+rows[['Year','Winner','Car']].head(10).to_string(index=False)
 
     # ── 23. COMPARISON: who has more wins/poles/podiums ───────────────────
-    if len(drivers)>=2 and any(w in q for w in ['more wins','more poles','more podiums','between','vs','versus','win more','more races won','who has won more']):
+    if len(drivers)>=2 and any(w in q for w in ['more wins','more poles','more podiums','more championships',
+                                                 'more titles','between','vs','versus','win more','more races won',
+                                                 'who has won more','how many more']):
         cat='wins'
         if 'pole' in q: cat='poles'
         elif 'podium' in q: cat='podiums'
@@ -554,7 +612,9 @@ def query_data(question, dfs):
         return "Comparing {}:\n{}\n→ {} leads.".format(cat, '\n'.join(lines), leader)
 
     # ── 24. MOST WINS ALL TIME ────────────────────────────────────────────
-    if any(w in q for w in ['most wins','most races won','all time wins','all-time wins','won most races','won the most races']):
+    if (any(w in q for w in ['most wins','most races won','all time wins','all-time wins','won most races','won the most races'])
+        or (re.search(r'top\s*\d+',q) and any(w in q for w in ['win','wins']))
+    ) and 'without' not in q and 'but no' not in q and 'but never' not in q:
         m2=re.search(r'top\s*(\d+)',q)
         if m2 or 'top' in q or 'list' in q:
             n=int(m2.group(1)) if m2 else 5
@@ -573,7 +633,7 @@ def query_data(question, dfs):
         return "{} has the most race wins of all time with {} wins.".format(top.index[0], top.iloc[0])
 
     # ── 25. WIN COUNTS ────────────────────────────────────────────────────
-    if any(w in q for w in ['how many','total','number of']) and any(w in q for w in ['win','wins','won','victory','victories']) and not any(w in q for w in ['title','titles','championship','championships']):
+    if any(w in q for w in ['how many','total','number of']) and any(w in q for w in ['win','wins','won','victory','victories']) and not any(w in q for w in ['title','titles','championship','championships']) and 'how many teams' not in q:
         if len(drivers)==1:
             d=drivers[0]; rows=dmatch(rs,'Winner',d)
             if year: rows=rows[rows['Year']==year]; return "{} won {} race{} in {}.".format(d,len(rows),'s' if len(rows)!=1 else '',year)
@@ -596,6 +656,27 @@ def query_data(question, dfs):
         if len(rows):
             return "{} finished P{} in the {} World Championship with {:.0f} points.".format(rows.iloc[0]['Driver'],target,year,rows.iloc[0]['PTS'])
 
+    # ── 26a0. RACE-BY-RACE HEAD-TO-HEAD ──────────────────────────────────
+    # e.g. "how many races did rosberg finish ahead of hamilton"
+    if len(drivers)==2 and any(w in q for w in ['finish ahead','finished ahead','ahead of','beat','beaten',
+                                                 'races did']) and any(w in q for w in ['race','races','finish','finished']) and not any(w in q for w in ['podium','shared','together','championship','title','season']):
+        d1,d2=drivers[0],drivers[1]
+        last1,last2=d1.split()[-1],d2.split()[-1]
+        r1=rd[rd['Driver'].str.contains(r'\b'+re.escape(last1)+r'\b',case=False,na=False,regex=True)][['Year','Grand Prix','Pos','Driver']]
+        r2=rd[rd['Driver'].str.contains(r'\b'+re.escape(last2)+r'\b',case=False,na=False,regex=True)][['Year','Grand Prix','Pos','Driver']]
+        merged=r1.merge(r2,on=['Year','Grand Prix'],suffixes=('_1','_2'))
+        merged['P1']=pd.to_numeric(merged['Pos_1'],errors='coerce')
+        merged['P2']=pd.to_numeric(merged['Pos_2'],errors='coerce')
+        valid=merged.dropna(subset=['P1','P2'])
+        d1_ahead=int((valid['P1']<valid['P2']).sum())
+        d2_ahead=int((valid['P2']<valid['P1']).sum())
+        ties=len(valid)-d1_ahead-d2_ahead
+        return ("Race-by-race head-to-head ({} races where both finished):\n"
+                "  {} finished ahead: {} times\n"
+                "  {} finished ahead: {} times{}").format(
+                    len(valid),d1,d1_ahead,d2,d2_ahead,
+                    "\n  Tied: {} times".format(ties) if ties else '')
+
     # ── 26a. CHAMPIONSHIP HEAD-TO-HEAD ─────────────────────────────────
     if len(drivers)==2 and any(w in q for w in ['ahead','beat','beaten','finished ahead','ended ahead',
                                                   'finished higher','higher in the championship',
@@ -612,6 +693,58 @@ def query_data(question, dfs):
     if any(w in q for w in ['youngest champion','youngest world champion','youngest driver to win','youngest title']):
         return ("Sebastian Vettel became the youngest F1 World Champion in 2010 at age 23. "
                 "(Note: this dataset does not include driver birthdays — this is from general F1 knowledge.)")
+
+    # ── 26c. CHAMPIONSHIP WITHOUT WINNING A RACE ────────────────────────
+    # e.g. "has anyone won the championship without winning a race"
+    if any(w in q for w in ['championship without','title without','champion without']) and any(w in q for w in ['winning a race','race win','winning any race','a win','any wins']):
+        champ_years=ds[ds['Pos']=='1'][['Driver','Year']]
+        results=[]
+        for _,row in champ_years.iterrows():
+            wins=rs[(rs['Year']==row['Year'])&(rs['Winner']==row['Driver'])].shape[0]
+            if wins==0:
+                results.append("{} in {}".format(row['Driver'],row['Year']))
+        if results:
+            return "Drivers who won the championship without winning a race that season:\n{}".format("\n".join("  "+r for r in results))
+        return "Every World Champion in this dataset won at least one race in their title-winning season."
+
+    # ── 26d. MOST WINS WITHOUT A CHAMPIONSHIP ─────────────────────────────
+    # e.g. "who has the most wins without winning the championship"
+    if any(w in q for w in ['most wins without','wins without a championship','wins without a title',
+                             'wins without winning the championship','wins without winning a title',
+                             'most race wins without','wins but no championship','wins but never won the championship']):
+        champs=set(ds[ds['Pos']=='1']['Driver'].unique())
+        win_counts=rs.groupby('Winner').size().sort_values(ascending=False)
+        non_champ_wins=win_counts[~win_counts.index.isin(champs)]
+        if len(non_champ_wins):
+            lines="\n".join("  {}: {} win{}".format(d,c,'s' if c!=1 else '') for d,c in non_champ_wins.head(5).items())
+            return "Most race wins without ever winning a World Championship:\n{}".format(lines)
+
+    # ── 26e. LARGEST CHAMPIONSHIP DEFICIT SUCCESSFULLY CHASED ─────────────
+    # e.g. "what is the largest points deficit chased in drivers championship"
+    if any(w in q for w in ['deficit','defecit','comeback','chased','overturned','come from behind']) and any(w in q for w in ['championship','title','champion','points']):
+        champ_list=ds[ds['Pos']=='1'][['Driver','Year']].values.tolist()
+        deficit_results=[]
+        for champ_driver,yr in champ_list:
+            yr_data=dd[dd['Year']==yr].copy()
+            yr_data['_Date']=pd.to_datetime(yr_data['Date'],format='%d %b %Y',errors='coerce')
+            yr_data=yr_data.dropna(subset=['_Date']).sort_values('_Date')
+            race_dates=sorted(yr_data['_Date'].unique())
+            cum_pts={}; max_deficit=0; max_deficit_gp=None
+            for rd2 in race_dates:
+                for _,row in yr_data[yr_data['_Date']==rd2].iterrows():
+                    cum_pts[row['Driver']]=cum_pts.get(row['Driver'],0)+row['PTS']
+                if champ_driver in cum_pts:
+                    leader_pts=max(cum_pts.values())
+                    deficit=leader_pts-cum_pts[champ_driver]
+                    if deficit>max_deficit:
+                        max_deficit=deficit
+                        max_deficit_gp=yr_data[yr_data['_Date']==rd2].iloc[0]['Grand Prix']
+            if max_deficit>0:
+                deficit_results.append((max_deficit,champ_driver,yr,max_deficit_gp))
+        deficit_results.sort(key=lambda x:-x[0])
+        if deficit_results:
+            lines="\n".join("  {} ({}): overcame {:.0f} pts deficit (after {} GP)".format(d,int(y),g,gp) for g,d,y,gp in deficit_results[:5])
+            return "Largest championship points deficits successfully overturned:\n{}".format(lines)
 
     # ── 27. DRIVER CHAMPIONSHIPS ──────────────────────────────────────────
     if any(w in q for w in ['championship','world champion','title','wdc']) and not any(w in q for w in ['constructor','team','wcc']) and not team:
@@ -648,6 +781,10 @@ def query_data(question, dfs):
             rows=fl[(fl['Year']==year)&fl['Grand Prix'].str.contains(gp,case=False,na=False)]
             if len(rows): return "{} set the fastest lap at the {} {} Grand Prix ({}).".format(rows.iloc[0]['Driver'],year,gp,rows.iloc[0]['Time'])
         top=fl.groupby('Driver').size().sort_values(ascending=False)
+        m_n=re.search(r'top\s*(\d+)',q)
+        if m_n or 'top' in q or 'list' in q or 'rank' in q:
+            n=int(m_n.group(1)) if m_n else 10
+            return "Top {} drivers by fastest laps:\n".format(n)+'\n'.join("  {}. {}: {}".format(i+1,d,c) for i,(d,c) in enumerate(top.head(n).items()))
         return "{} holds the record for most fastest laps with {}.".format(top.index[0], top.iloc[0])
 
     # ── 30a. MULTIPLE PITSTOPS IN A SINGLE RACE ─────────────────────────
@@ -683,6 +820,30 @@ def query_data(question, dfs):
         top=ps.groupby('Driver').size().sort_values(ascending=False)
         return "{} has made the most pitstops with {} total.".format(top.index[0], top.iloc[0])
 
+    # ── 30b. MOST POLES/PODIUMS/RACES WITHOUT A WIN ──────────────────────
+    # e.g. "most poles without a win", "most podiums without winning"
+    if any(w in q for w in ['without a win','without winning','without ever winning','no wins',
+                             'without a race win','without a victory','winless']):
+        winners=set(rs['Winner'].unique())
+        if any(w in q for w in ['pole','poles']):
+            poles_by_driver=sg[sg['Pos']==1].groupby('Driver').size()
+            no_win_poles=poles_by_driver[~poles_by_driver.index.isin(winners)].sort_values(ascending=False)
+            if len(no_win_poles):
+                lines="\n".join("  {}: {} pole{}".format(d,c,'s' if c!=1 else '') for d,c in no_win_poles.head(5).items())
+                return "Most pole positions without ever winning a race:\n{}".format(lines)
+        if any(w in q for w in ['podium','podiums']):
+            pods=rd[pd.to_numeric(rd['Pos'],errors='coerce')<=3].groupby('Driver').size()
+            no_win_pods=pods[~pods.index.isin(winners)].sort_values(ascending=False)
+            if len(no_win_pods):
+                lines="\n".join("  {}: {} podium{}".format(d,c,'s' if c!=1 else '') for d,c in no_win_pods.head(5).items())
+                return "Most podiums without ever winning a race:\n{}".format(lines)
+        if any(w in q for w in ['race','races','start','starts','most']):
+            race_counts=rd.groupby('Driver').size()
+            no_win_races=race_counts[~race_counts.index.isin(winners)].sort_values(ascending=False)
+            if len(no_win_races):
+                lines="\n".join("  {}: {} race{}".format(d,c,'s' if c!=1 else '') for d,c in no_win_races.head(5).items())
+                return "Most race starts without ever winning a race:\n{}".format(lines)
+
     # ── 31. POLE POSITIONS ────────────────────────────────────────────────
     if any(w in q for w in ['pole position','pole positions','poles','on pole']):
         if len(drivers)==1:
@@ -695,6 +856,10 @@ def query_data(question, dfs):
             top=sg[(sg['Year']==year)&(sg['Pos']==1)].groupby('Driver').size().sort_values(ascending=False)
             return "{} had the most poles in {} with {}.".format(top.index[0], year, top.iloc[0])
         top=sg[sg['Pos']==1].groupby('Driver').size().sort_values(ascending=False)
+        m_n=re.search(r'top\s*(\d+)',q)
+        if m_n or 'top' in q or 'list' in q or 'rank' in q:
+            n=int(m_n.group(1)) if m_n else 10
+            return "Top {} drivers by pole positions:\n".format(n)+'\n'.join("  {}. {}: {}".format(i+1,d,c) for i,(d,c) in enumerate(top.head(n).items()))
         return "{} has the most pole positions of all time with {}.".format(top.index[0], top.iloc[0])
 
     # ── 32. PODIUMS ───────────────────────────────────────────────────────
@@ -721,10 +886,75 @@ def query_data(question, dfs):
             n=len(rows[pd.to_numeric(rows['Pos'],errors='coerce')<=3])
             return "{} has finished on the podium {} times.".format(d, n)
         top=rd[pd.to_numeric(rd['Pos'],errors='coerce')<=3].groupby('Driver').size().sort_values(ascending=False)
+        m_n=re.search(r'top\s*(\d+)',q)
+        if m_n or 'top' in q or 'list' in q or 'rank' in q:
+            n=int(m_n.group(1)) if m_n else 10
+            return "Top {} drivers by podium finishes:\n".format(n)+'\n'.join("  {}. {}: {}".format(i+1,d,c) for i,(d,c) in enumerate(top.head(n).items()))
         return "{} has the most podium finishes of all time with {}.".format(top.index[0], top.iloc[0])
+
+    # ── 32a. FINISHED OUTSIDE POINTS ─────────────────────────────────────
+    # e.g. "how many races did hamilton finish outside points"
+    if any(w in q for w in ['outside points','outside the points','no points','zero points',
+                             'pointless','score no points','scored no points','scored 0']):
+        if len(drivers)==1:
+            d=drivers[0]; rows=dmatch(rd,'Driver',d)
+            rows=rows[pd.to_numeric(rows['PTS'],errors='coerce')==0]
+            if yr_start and yr_end:
+                rows=rows[(rows['Year']>=yr_start)&(rows['Year']<=yr_end)]
+                return "{} finished outside the points {} times from {} to {}.".format(d,len(rows),yr_start,yr_end)
+            if year:
+                rows=rows[rows['Year']==year]
+                return "{} finished outside the points {} times in {}.".format(d,len(rows),year)
+            return "{} finished outside the points {} times in their career.".format(d,len(rows))
+        top=rd[pd.to_numeric(rd['PTS'],errors='coerce')==0].groupby('Driver').size().sort_values(ascending=False)
+        return "{} has the most pointless finishes with {}.".format(top.index[0],top.iloc[0])
+
+    # ── 32b. LEAST POINTS WITH RACE THRESHOLD ────────────────────────────
+    # e.g. "who has the least points scored having raced for more than 100 races"
+    if any(w in q for w in ['least points','least amount','fewest points','lowest points']) and any(w in q for w in ['more than','over','at least','raced']):
+        m_n=re.search(r'(?:more than|over|at least|than)\s+(\d+)',q)
+        threshold=int(m_n.group(1)) if m_n else 100
+        race_counts=rd.groupby('Driver').size().reset_index(name='Races')
+        eligible=race_counts[race_counts['Races']>threshold]
+        pts=dd.groupby('Driver')['PTS'].sum().reset_index(name='TotalPTS')
+        merged=eligible.merge(pts,on='Driver',how='left').fillna(0).sort_values('TotalPTS')
+        if len(merged):
+            lines="\n".join("  {}: {:.0f} pts ({} races)".format(r['Driver'],r['TotalPTS'],r['Races']) for _,r in merged.head(5).iterrows())
+            return "Drivers with the least championship points (more than {} races):\n{}".format(threshold,lines)
+
+    # ── 32c. TEAMMATE POINTS GAP ─────────────────────────────────────────
+    # e.g. "which driver had the biggest points gap with their teammate"
+    if any(w in q for w in ['teammate','team-mate','team mate']) and any(w in q for w in ['gap','difference','margin','biggest','largest','most']):
+        gaps=[]
+        for (yr,car),grp in ds.groupby(['Year','Car']):
+            if len(grp)<2: continue
+            sorted_g=grp.sort_values('PTS',ascending=False)
+            top=sorted_g.iloc[0]; bot=sorted_g.iloc[-1]
+            gap=top['PTS']-bot['PTS']
+            gaps.append({'Year':yr,'Car':car,'Leader':top['Driver'],'LeaderPTS':top['PTS'],
+                         'Teammate':bot['Driver'],'TeammatePTS':bot['PTS'],'Gap':gap})
+        if gaps:
+            gaps_df=pd.DataFrame(gaps).sort_values('Gap',ascending=False)
+            if year:
+                gaps_df=gaps_df[gaps_df['Year']==year]
+            if team:
+                gaps_df=gaps_df[gaps_df['Car'].str.contains(team,case=False,na=False)]
+            if len(gaps_df):
+                lines=[]
+                for _,r in gaps_df.head(5).iterrows():
+                    lines.append("  {} vs {} ({}, {}): {:.0f} pts ({:.0f} vs {:.0f})".format(
+                        r['Leader'],r['Teammate'],r['Car'],int(r['Year']),r['Gap'],r['LeaderPTS'],r['TeammatePTS']))
+                return "Biggest teammate points gaps:\n{}".format('\n'.join(lines))
 
     # ── 33. POINTS ────────────────────────────────────────────────────────
     if any(w in q for w in ['points','scored']):
+        if yr_start and yr_end and len(drivers)==1:
+            d=drivers[0]; rows=dmatch(ds,'Driver',d)
+            rows=rows[(rows['Year']>=yr_start)&(rows['Year']<=yr_end)]
+            if len(rows):
+                total=rows['PTS'].sum()
+                lines="\n".join("  {}: {:.0f} pts (P{})".format(r['Year'],r['PTS'],r['Pos']) for _,r in rows.sort_values('Year').iterrows())
+                return "{} scored {:.0f} total points from {} to {}:\n{}".format(d,total,yr_start,yr_end,lines)
         if year and len(drivers)==1:
             d=drivers[0]; rows=dmatch(ds,'Driver',d); rows=rows[rows['Year']==year]
             if len(rows): return "{} scored {:.0f} points in {} (P{}).".format(d, rows.iloc[0]['PTS'], year, rows.iloc[0]['Pos'])
@@ -764,6 +994,63 @@ def query_data(question, dfs):
         top=rd[rd['Pos']=='NC'].groupby('Driver').size().sort_values(ascending=False)
         return "{} has the most retirements with {}.".format(top.index[0], top.iloc[0])
 
+    # ── 36b. LAST PLACE FINISHES ─────────────────────────────────────────
+    # e.g. "who has the most last finishes", "most last place finishes"
+    if any(w in q for w in ['last finish','last finishes','last place','dead last','finished last','last position']):
+        valid=rd.assign(PosN=pd.to_numeric(rd['Pos'],errors='coerce')).dropna(subset=['PosN'])
+        last_pos=valid.groupby(['Year','Grand Prix'])['PosN'].max().reset_index(name='LastPos')
+        merged=valid.merge(last_pos,on=['Year','Grand Prix'])
+        last_finishers=merged[merged['PosN']==merged['LastPos']]
+        if len(drivers)==1:
+            d=drivers[0]; rows=last_finishers[last_finishers['Driver'].str.contains(d.split()[-1],case=False,na=False)]
+            return "{} finished in last place {} times.".format(d,len(rows))
+        top=last_finishers.groupby('Driver').size().sort_values(ascending=False)
+        m_n=re.search(r'top\s*(\d+)',q)
+        n=int(m_n.group(1)) if m_n else 10
+        lines="\n".join("  {}: {} times".format(d,c) for d,c in top.head(n).items())
+        return "Most last-place finishes:\n{}".format(lines)
+
+    # ── 36a. QUALIFYING EXITS (Q1/Q2/Q3) ────────────────────────────────
+    # e.g. "who had the most Q3 exits", "most Q1 eliminations"
+    if any(w in q for w in ['q1','q2','q3']) and any(w in q for w in ['exit','exits','elimination','eliminations',
+                                                                       'appearance','appearances','knocked out',
+                                                                       'reached','made it','got into','most']):
+        # Only works for 2006+ when Q1/Q2/Q3 format was introduced
+        modern=qu[qu['Q1'].notna()&(qu['Q1'].astype(str).str.strip()!='')]
+        if 'q3' in q:
+            if any(w in q for w in ['appearance','appearances','reached','made it','got into']):
+                q3_drivers=modern[modern['Q3'].notna()&(modern['Q3'].astype(str).str.strip()!='')].groupby('Driver').size().sort_values(ascending=False)
+                if len(drivers)==1:
+                    d=drivers[0]; rows=dmatch(modern[modern['Q3'].notna()&(modern['Q3'].astype(str).str.strip()!='')],'Driver',d)
+                    return "{} reached Q3 {} times.".format(d,len(rows))
+                lines="\n".join("  {}: {} times".format(d,c) for d,c in q3_drivers.head(10).items())
+                return "Most Q3 appearances (2006+):\n{}".format(lines)
+            # Q3 exits = made it to Q3 (set a Q3 time, positions 1-10)
+            q3_drivers=modern[modern['Q3'].notna()&(modern['Q3'].astype(str).str.strip()!='')].groupby('Driver').size().sort_values(ascending=False)
+            if len(drivers)==1:
+                d=drivers[0]; rows=dmatch(modern[modern['Q3'].notna()&(modern['Q3'].astype(str).str.strip()!='')],'Driver',d)
+                return "{} made it to Q3 {} times.".format(d,len(rows))
+            lines="\n".join("  {}: {} times".format(d,c) for d,c in q3_drivers.head(10).items())
+            return "Most Q3 appearances (2006+):\n{}".format(lines)
+        if 'q2' in q:
+            # Q2 exit = had Q2 time but no Q3 time (eliminated in Q2)
+            q2_exit=modern[(modern['Q2'].notna()&(modern['Q2'].astype(str).str.strip()!=''))&(modern['Q3'].isna()|(modern['Q3'].astype(str).str.strip()==''))]
+            if len(drivers)==1:
+                d=drivers[0]; rows=dmatch(q2_exit,'Driver',d)
+                return "{} was eliminated in Q2 {} times.".format(d,len(rows))
+            top=q2_exit.groupby('Driver').size().sort_values(ascending=False)
+            lines="\n".join("  {}: {} times".format(d,c) for d,c in top.head(10).items())
+            return "Most Q2 eliminations (2006+):\n{}".format(lines)
+        if 'q1' in q:
+            # Q1 exit = had Q1 time but no Q2 time (eliminated in Q1)
+            q1_exit=modern[(modern['Q1'].notna()&(modern['Q1'].astype(str).str.strip()!=''))&(modern['Q2'].isna()|(modern['Q2'].astype(str).str.strip()==''))]
+            if len(drivers)==1:
+                d=drivers[0]; rows=dmatch(q1_exit,'Driver',d)
+                return "{} was eliminated in Q1 {} times.".format(d,len(rows))
+            top=q1_exit.groupby('Driver').size().sort_values(ascending=False)
+            lines="\n".join("  {}: {} times".format(d,c) for d,c in top.head(10).items())
+            return "Most Q1 eliminations (2006+):\n{}".format(lines)
+
     # ── 37. QUALIFYING ────────────────────────────────────────────────────
     if any(w in q for w in ['qualifying','qualify','qualification','quali']):
         if year and gp:
@@ -795,6 +1082,26 @@ def query_data(question, dfs):
     if any(w in q for w in ['most hosted','most times hosted','hosted the most','circuit has hosted most']):
         top=rs.groupby('Grand Prix').size().sort_values(ascending=False)
         return "{} has hosted the most F1 Grands Prix with {} editions.".format(top.index[0], top.iloc[0])
+
+    # ── 41a. LONGEST RUNNING / LONGEST RACE ───────────────────────────────
+    # e.g. "what has been the longest running race", "longest race by duration"
+    if any(w in q for w in ['longest running','longest-running','oldest race','oldest grand prix','been on the calendar']):
+        top=rs.groupby('Grand Prix').size().sort_values(ascending=False)
+        m_n=re.search(r'top\s*(\d+)',q)
+        n=int(m_n.group(1)) if m_n else 5
+        lines="\n".join("  {}: {} editions".format(gp2,c) for gp2,c in top.head(n).items())
+        return "Longest-running Grands Prix (most editions):\n{}".format(lines)
+    if any(w in q for w in ['longest race','longest duration','longest time']):
+        def _time_to_sec(t):
+            try:
+                p=str(t).split(':')
+                if len(p)==3: return int(p[0])*3600+int(p[1])*60+float(p[2])
+            except: pass
+            return None
+        valid=rs.assign(TimeSec=rs['Time'].apply(_time_to_sec)).dropna(subset=['TimeSec'])
+        top=valid.nlargest(5,'TimeSec')
+        lines="\n".join("  {} {} Grand Prix: {} ({})".format(int(r['Year']),r['Grand Prix'],r['Time'],r['Winner']) for _,r in top.iterrows())
+        return "Longest F1 races by duration:\n{}".format(lines)
 
     # ── 42. LAST RACE OF A SEASON ─────────────────────────────────────────
     if any(w in q for w in ['last race','final race','season finale','last grand prix','final grand prix']) and year:
@@ -966,6 +1273,66 @@ def query_data(question, dfs):
     if year and len(drivers)==1 and any(w in q for w in ['results','season','how did','finished','performed']):
         d=drivers[0]; rows=dmatch(rd,'Driver',d); rows=rows[rows['Year']==year][['Grand Prix','Pos','PTS']]
         if len(rows): return "{}'s {} season results:\n{}".format(d, year, rows.to_string(index=False))
+
+    # ── 60. TEAM / DRIVER WITH EXACTLY N WINS ─────────────────────────────
+    # e.g. "which team has only one win", "which driver has exactly 5 wins"
+    if any(w in q for w in ['only one win','exactly one win','just one win','single win',
+                             'only 1 win','exactly 1 win','only two win','exactly two win',
+                             'only 2 win','exactly 2 win','only three win','exactly three win',
+                             'only 3 win','exactly 3 win','only one race','exactly one race',
+                             'just one race','single race win','won only once','won exactly once',
+                             'won just once','won only 1','won exactly 1']):
+        word_to_num={'one':1,'1':1,'two':2,'2':2,'three':3,'3':3,'four':4,'4':4,'five':5,'5':5}
+        target=1
+        for word,num in word_to_num.items():
+            if word in q: target=num; break
+        if any(w in q for w in ['team','constructor','car']):
+            counts=rs.groupby('Car').size()
+            exact=counts[counts==target].sort_index()
+            if len(exact):
+                lines="\n".join("  {}".format(t) for t in exact.index[:15])
+                return "Teams with exactly {} race win{}:\n{}".format(target,'s' if target!=1 else '',lines)
+            return "No team has exactly {} race win{} in this dataset.".format(target,'s' if target!=1 else '')
+        counts=rs.groupby('Winner').size()
+        exact=counts[counts==target].sort_index()
+        if len(exact):
+            lines="\n".join("  {}".format(d) for d in exact.index[:15])
+            return "Drivers with exactly {} race win{}:\n{}".format(target,'s' if target!=1 else '',lines)
+        return "No driver has exactly {} race win{} in this dataset.".format(target,'s' if target!=1 else '')
+
+    # ── 63. WON ON DEBUT / FIRST RACE ─────────────────────────────────────
+    # e.g. "who won on their debut", "who won their first race"
+    if any(w in q for w in ['won on debut','won their debut','won his debut','won on their first',
+                             'won on their debut','won their first race','won his first race',
+                             'won first race','win on debut','debut win','won in their first']):
+        first_races=rd.groupby('Driver').apply(lambda x: x.sort_values('Year').iloc[0],include_groups=False).reset_index()
+        debut_winners=first_races[first_races['Pos']=='1']
+        if len(debut_winners):
+            lines="\n".join("  {} — {} {} Grand Prix".format(r['Driver'],r['Year'],r['Grand Prix']) for _,r in debut_winners.sort_values('Year').iterrows())
+            return "Drivers who won on their F1 debut:\n{}".format(lines)
+        return "No driver in this dataset won on their F1 debut."
+
+    # ── 64. WON FOR MULTIPLE TEAMS ─────────────────────────────────────────
+    # e.g. "which drivers have won for multiple teams", "how many teams has hamilton won for"
+    if any(w in q for w in ['multiple teams','different teams','how many teams','won for more than one',
+                             'won with different','won for different']):
+        if len(drivers)==1:
+            d=drivers[0]; rows=dmatch(rs,'Winner',d)
+            teams=rows['Car'].unique()
+            return "{} has won races for {} different team{}: {}.".format(d,len(teams),'s' if len(teams)!=1 else '',', '.join(sorted(teams)))
+        driver_teams=rs.groupby('Winner')['Car'].nunique()
+        multi=driver_teams[driver_teams>1].sort_values(ascending=False)
+        if len(multi):
+            lines="\n".join("  {}: {} teams".format(d,c) for d,c in multi.head(10).items())
+            return "Drivers who have won races for multiple teams:\n{}".format(lines)
+
+    # ── 68. DRIVERS WHO HAVE WON IN SPECIFIC YEAR/SEASON ─────────────────
+    # e.g. "which drivers won a race in 2020", "all winners in 2019"
+    if year and any(w in q for w in ['which driver','all winners','every winner','all the winners','list winners','who all won','list of winners']):
+        winners=rs[rs['Year']==year].groupby('Winner').size().sort_values(ascending=False)
+        if len(winners):
+            lines="\n".join("  {}: {} win{}".format(d,c,'s' if c!=1 else '') for d,c in winners.items())
+            return "Race winners in {}:\n{}".format(year,lines)
 
     return None
 
