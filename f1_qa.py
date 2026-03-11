@@ -895,6 +895,30 @@ def query_data(question, dfs):
             lines="\n".join("  {}: {:.0f} pts ({} races)".format(r['Driver'],r['TotalPTS'],r['Races']) for _,r in merged.head(5).iterrows())
             return "Drivers with the least championship points (more than {} races):\n{}".format(threshold,lines)
 
+    # ── 32c. TEAMMATE POINTS GAP ─────────────────────────────────────────
+    # e.g. "which driver had the biggest points gap with their teammate"
+    if any(w in q for w in ['teammate','team-mate','team mate']) and any(w in q for w in ['gap','difference','margin','biggest','largest','most']):
+        gaps=[]
+        for (yr,car),grp in ds.groupby(['Year','Car']):
+            if len(grp)<2: continue
+            sorted_g=grp.sort_values('PTS',ascending=False)
+            top=sorted_g.iloc[0]; bot=sorted_g.iloc[-1]
+            gap=top['PTS']-bot['PTS']
+            gaps.append({'Year':yr,'Car':car,'Leader':top['Driver'],'LeaderPTS':top['PTS'],
+                         'Teammate':bot['Driver'],'TeammatePTS':bot['PTS'],'Gap':gap})
+        if gaps:
+            gaps_df=pd.DataFrame(gaps).sort_values('Gap',ascending=False)
+            if year:
+                gaps_df=gaps_df[gaps_df['Year']==year]
+            if team:
+                gaps_df=gaps_df[gaps_df['Car'].str.contains(team,case=False,na=False)]
+            if len(gaps_df):
+                lines=[]
+                for _,r in gaps_df.head(5).iterrows():
+                    lines.append("  {} vs {} ({}, {}): {:.0f} pts ({:.0f} vs {:.0f})".format(
+                        r['Leader'],r['Teammate'],r['Car'],int(r['Year']),r['Gap'],r['LeaderPTS'],r['TeammatePTS']))
+                return "Biggest teammate points gaps:\n{}".format('\n'.join(lines))
+
     # ── 33. POINTS ────────────────────────────────────────────────────────
     if any(w in q for w in ['points','scored']):
         if yr_start and yr_end and len(drivers)==1:
@@ -942,6 +966,22 @@ def query_data(question, dfs):
             if len(top): return "Most DNFs in {}: {} with {}.".format(year, top.index[0], top.iloc[0])
         top=rd[rd['Pos']=='NC'].groupby('Driver').size().sort_values(ascending=False)
         return "{} has the most retirements with {}.".format(top.index[0], top.iloc[0])
+
+    # ── 36b. LAST PLACE FINISHES ─────────────────────────────────────────
+    # e.g. "who has the most last finishes", "most last place finishes"
+    if any(w in q for w in ['last finish','last finishes','last place','dead last','finished last','last position']):
+        valid=rd.assign(PosN=pd.to_numeric(rd['Pos'],errors='coerce')).dropna(subset=['PosN'])
+        last_pos=valid.groupby(['Year','Grand Prix'])['PosN'].max().reset_index(name='LastPos')
+        merged=valid.merge(last_pos,on=['Year','Grand Prix'])
+        last_finishers=merged[merged['PosN']==merged['LastPos']]
+        if len(drivers)==1:
+            d=drivers[0]; rows=last_finishers[last_finishers['Driver'].str.contains(d.split()[-1],case=False,na=False)]
+            return "{} finished in last place {} times.".format(d,len(rows))
+        top=last_finishers.groupby('Driver').size().sort_values(ascending=False)
+        m_n=re.search(r'top\s*(\d+)',q)
+        n=int(m_n.group(1)) if m_n else 10
+        lines="\n".join("  {}: {} times".format(d,c) for d,c in top.head(n).items())
+        return "Most last-place finishes:\n{}".format(lines)
 
     # ── 36a. QUALIFYING EXITS (Q1/Q2/Q3) ────────────────────────────────
     # e.g. "who had the most Q3 exits", "most Q1 eliminations"
