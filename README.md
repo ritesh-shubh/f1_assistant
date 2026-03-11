@@ -20,7 +20,7 @@ Your question
 pip install -r requirements.txt
 ```
 
-### 2. Put your CSV files in a folder called `data/`
+### File Structure
 ```
 f1_assistant/
 ├── f1_qa.py
@@ -43,15 +43,15 @@ f1_assistant/
     └── team_details.csv
 ```
 
-### 3. Set your Anthropic API key
-```bash
-# Mac/Linux
-export ANTHROPIC_API_KEY=your_key_here
+### Download and set up ollama and deepseek coder 
+This version works on Deepseek_coder:later but you change it in the code, if you wanna use another agent.
+Install ollama from https://ollama.com/
+and run these commands in command line
+ollama pull deepseek-coder
+pip install pandas requests
 
-# Windows
-set ANTHROPIC_API_KEY=your_key_here
-```
-Get a key at: https://console.anthropic.com
+### run ollama list and make sure the name there and in the code matches exactly
+
 
 ### 4. Run it
 
@@ -83,11 +83,3 @@ How many races has Fernando Alonso competed in?
 Type `verbose` in interactive mode to see the generated pandas query alongside the answer.
 Type `quit` to exit.
 
-## For your ESP32 project
-
-This script is the brain. On your hardware setup:
-- ESP32 handles microphone input and speaker/OLED output
-- Raspberry Pi runs this script as a server
-- ESP32 sends text to Pi via WiFi, Pi returns the answer string
-
-See the architecture in the main conversation for details.
