@@ -399,7 +399,7 @@ def query_data(question, dfs):
                 winner=winner_row.iloc[0]['Winner'] if len(winner_row) else 'Unknown'
                 return "The biggest winning margin (by time gap) was {:.3f}s at the {} {} Grand Prix, won by {}.".format(
                     best['Gap'],int(best['Year']),best['Grand Prix'],winner)
-        except Exception:
+        except (KeyError, ValueError, TypeError):
             pass
         return "Winning margin data is not directly available in this dataset."
 
@@ -444,7 +444,7 @@ def query_data(question, dfs):
         return "Teams with the most F1 wins (all time):\n{}".format(lines)
 
     # ── 15a. TEAM WIN PERCENTAGE ─────────────────────────────────────────
-    if any(w in q for w in ['win%','win percentage','win rate','highest win rate','best win rate','highest win%','dominat']):
+    if any(w in q for w in ['win%','win percentage','win rate','highest win rate','best win rate','highest win%','dominant','domination','dominance']):
         team_year=rs.groupby(['Year','Car']).size().reset_index(name='Wins')
         races_per_year=rs.groupby('Year').size().reset_index(name='TotalRaces')
         team_year=team_year.merge(races_per_year,on='Year')
@@ -477,7 +477,7 @@ def query_data(question, dfs):
         merged=merged.dropna(subset=['Pos'])
         if len(merged):
             worst_start=merged.sort_values('Pos',ascending=False).iloc[0]
-            return "{} won the {} {} Grand Prix starting from P{} — the lowest grid position for a race winner in F1.".format(
+            return "{} won the {} {} Grand Prix starting from P{} — the lowest grid position for a race winner in this dataset.".format(
                 worst_start['Winner'],int(worst_start['Year']),worst_start['Grand Prix'],int(worst_start['Pos']))
 
     # ── 19. FIRST EVER F1 RACE – fires ONLY when no driver/GP/year context ─
