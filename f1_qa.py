@@ -462,7 +462,7 @@ def query_data(question, dfs):
             best['Car'],int(best['Year']),int(best['Wins']),int(best['TotalRaces']),best['WinPct'])
 
     # ── 16. HOW MANY TIMES HAS A GP BEEN HELD ────────────────────────────
-    if any(w in q for w in ['how many times has','how often has','how many editions','how many times the','how many times a']) and gp:
+    if any(w in q for w in ['how many times has','how often has','how many editions','how many times the','how many times a']) and gp and not (drivers and any(w in q for w in ['won','win','wins'])):
         sub=rs[rs['Grand Prix'].str.contains(gp,case=False,na=False)]
         return "The {} Grand Prix has been held {} times in F1 ({}-{}).".format(gp, len(sub), sub['Year'].min(), sub['Year'].max())
 
@@ -979,6 +979,26 @@ def query_data(question, dfs):
     if any(w in q for w in ['most different winners','year with most winners','most winners in a season']):
         top=rs.groupby('Year')['Winner'].nunique().sort_values(ascending=False)
         return "{} had the most different race winners with {}.".format(top.index[0], top.iloc[0])
+
+    # ── 36c. CHAOS SCORE (DNFs per race) ─────────────────────────────────
+    # e.g. "which was the most chaotic race of 2021", "chaos score", "most dnfs in a race"
+    if any(w in q for w in ['chaotic','chaos','most dnfs in a race','most retirements in a race',
+                             'most dnfs in a single','most retirements in a single']):
+        dnfs=rd[rd['Pos']=='NC'].groupby(['Year','Grand Prix']).size().reset_index(name='DNFs')
+        dnfs=dnfs.sort_values('DNFs',ascending=False)
+        if year:
+            dnfs=dnfs[dnfs['Year']==year]
+        if gp:
+            dnfs=dnfs[dnfs['Grand Prix'].str.contains(gp,case=False,na=False)]
+        if len(dnfs):
+            m_n=re.search(r'top\s*(\d+)',q)
+            n=int(m_n.group(1)) if m_n else 5
+            top_races=dnfs.head(n)
+            lines="\n".join("  {} {} Grand Prix: chaos score {} ({} DNFs)".format(
+                int(r['Year']),r['Grand Prix'],r['DNFs'],r['DNFs']) for _,r in top_races.iterrows())
+            label="in {}".format(year) if year else "of all time"
+            return "Most chaotic races {} (by DNFs):\n{}".format(label,lines)
+        return "No DNF data found for the specified criteria."
 
     # ── 36. RETIREMENTS / DNF ─────────────────────────────────────────────
     if any(w in q for w in ['dnf','retired from','not classified','did not finish','retirement','retirements']):
