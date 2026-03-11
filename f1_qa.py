@@ -1083,6 +1083,26 @@ def query_data(question, dfs):
         top=rs.groupby('Grand Prix').size().sort_values(ascending=False)
         return "{} has hosted the most F1 Grands Prix with {} editions.".format(top.index[0], top.iloc[0])
 
+    # ── 41a. LONGEST RUNNING / LONGEST RACE ───────────────────────────────
+    # e.g. "what has been the longest running race", "longest race by duration"
+    if any(w in q for w in ['longest running','longest-running','oldest race','oldest grand prix','been on the calendar']):
+        top=rs.groupby('Grand Prix').size().sort_values(ascending=False)
+        m_n=re.search(r'top\s*(\d+)',q)
+        n=int(m_n.group(1)) if m_n else 5
+        lines="\n".join("  {}: {} editions".format(gp2,c) for gp2,c in top.head(n).items())
+        return "Longest-running Grands Prix (most editions):\n{}".format(lines)
+    if any(w in q for w in ['longest race','longest duration','longest time']):
+        def _time_to_sec(t):
+            try:
+                p=str(t).split(':')
+                if len(p)==3: return int(p[0])*3600+int(p[1])*60+float(p[2])
+            except: pass
+            return None
+        valid=rs.assign(TimeSec=rs['Time'].apply(_time_to_sec)).dropna(subset=['TimeSec'])
+        top=valid.nlargest(5,'TimeSec')
+        lines="\n".join("  {} {} Grand Prix: {} ({})".format(int(r['Year']),r['Grand Prix'],r['Time'],r['Winner']) for _,r in top.iterrows())
+        return "Longest F1 races by duration:\n{}".format(lines)
+
     # ── 42. LAST RACE OF A SEASON ─────────────────────────────────────────
     if any(w in q for w in ['last race','final race','season finale','last grand prix','final grand prix']) and year:
         r=rs[rs['Year']==year].iloc[-1]

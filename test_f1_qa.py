@@ -396,3 +396,24 @@ class TestChampionshipDeficit:
         result = query_data("biggest championship comeback", dfs)
         assert result is not None
         assert "deficit" in result.lower()
+
+
+# ── Longest running / longest race ─────────────────────────────────────
+
+class TestLongestRace:
+    def test_longest_running_race(self, dfs):
+        result = query_data("what has been the longest running race", dfs)
+        assert result is not None
+        assert "editions" in result.lower()
+        assert "Great Britain" in result
+
+    def test_longest_race_duration(self, dfs):
+        result = query_data("which is the longest race, duration of race wise", dfs)
+        assert result is not None
+        assert "duration" in result.lower()
+        assert "Canada" in result  # 2011 Canada GP is the longest
+
+    def test_longest_race_ever(self, dfs):
+        result = query_data("longest race ever", dfs)
+        assert result is not None
+        assert "duration" in result.lower()
