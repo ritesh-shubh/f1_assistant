@@ -994,7 +994,7 @@ def query_data(question, dfs):
             m_n=re.search(r'top\s*(\d+)',q)
             n=int(m_n.group(1)) if m_n else 5
             top_races=dnfs.head(n)
-            lines="\n".join("  {} {} Grand Prix: {} DNFs (chaos score: {})".format(
+            lines="\n".join("  {} {} Grand Prix: chaos score {} ({} DNFs)".format(
                 int(r['Year']),r['Grand Prix'],r['DNFs'],r['DNFs']) for _,r in top_races.iterrows())
             label="in {}".format(year) if year else "of all time"
             return "Most chaotic races {} (by DNFs):\n{}".format(label,lines)
