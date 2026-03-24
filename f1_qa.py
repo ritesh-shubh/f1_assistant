@@ -18,6 +18,8 @@ import os, sys, re
 import pandas as pd
 import requests
 
+DRIVER_SORT_KEY_FALLBACK = 10**9
+
 # ─────────────────────────────────────────────
 # SETTINGS
 # ─────────────────────────────────────────────
@@ -64,6 +66,9 @@ def extract_year(q):
 def extract_year_range(q):
     """Extract a year range like 'from 2016 to 2020' or 'between 2010 and 2015'."""
     m = re.search(r'(?:from|between)\s+(19[5-9]\d|200\d|201\d|202[0-2])\s+(?:to|and)\s+(19[5-9]\d|200\d|201\d|202[0-2])', q)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m = re.search(r'\b(19[5-9]\d|200\d|201\d|202[0-2])\s*[-–—]\s*(19[5-9]\d|200\d|201\d|202[0-2])\b', q)
     if m:
         return int(m.group(1)), int(m.group(2))
     return None, None
@@ -579,7 +584,7 @@ def query_data(question, dfs):
             return "Drivers who won races but never won a World Championship:\n{}".format(lines)
 
     # ── 22. RACE WINNER ───────────────────────────────────────────────────
-    if any(w in q for w in ['who won','winner of','win the','won the']) and not any(w in q for w in ['most','constructor']):
+    if any(w in q for w in ['who won','winner of','win the','won the']) and not any(w in q for w in ['most','constructor','championship','title','wdc','more','between','vs','versus']):
         if year and gp:
             rows=rs[(rs['Year']==year)&rs['Grand Prix'].str.contains(gp,case=False,na=False)]
             if len(rows): return "{} won the {} {} Grand Prix driving for {}.".format(rows.iloc[0]['Winner'],year,gp,rows.iloc[0]['Car'])
@@ -593,23 +598,33 @@ def query_data(question, dfs):
 
     # ── 23. COMPARISON: who has more wins/poles/podiums ───────────────────
     if len(drivers)>=2 and any(w in q for w in ['more wins','more poles','more podiums','more championships',
-                                                 'more titles','between','vs','versus','win more','more races won',
-                                                 'who has won more','how many more']):
+                                                  'more titles','between','vs','versus','win more','more races won',
+                                                  'more races','who has won more','how many more']):
         cat='wins'
         if 'pole' in q: cat='poles'
         elif 'podium' in q: cat='podiums'
         elif 'championship' in q or 'title' in q: cat='titles'
         lines=[]; results={}
         for d in drivers:
-            rows_w=dmatch(rs,'Winner',d); w_cnt=len(rows_w)
-            rows_sg2=dmatch(sg,'Driver',d); p_cnt=len(rows_sg2[rows_sg2['Pos']==1])
-            rows_rd3=dmatch(rd,'Driver',d); pod_cnt=len(rows_rd3[pd.to_numeric(rows_rd3['Pos'],errors='coerce')<=3])
-            rows_ds3=dmatch(ds,'Driver',d); t_cnt=len(rows_ds3[rows_ds3['Pos']=='1'])
+            rows_w=dmatch(rs,'Winner',d)
+            rows_sg2=dmatch(sg,'Driver',d)
+            rows_rd3=dmatch(rd,'Driver',d)
+            rows_ds3=dmatch(ds,'Driver',d)
+            if year:
+                rows_w=rows_w[rows_w['Year']==year]
+                rows_sg2=rows_sg2[rows_sg2['Year']==year]
+                rows_rd3=rows_rd3[rows_rd3['Year']==year]
+                rows_ds3=rows_ds3[rows_ds3['Year']==year]
+            w_cnt=len(rows_w)
+            p_cnt=len(rows_sg2[rows_sg2['Pos']==1])
+            pod_cnt=len(rows_rd3[pd.to_numeric(rows_rd3['Pos'],errors='coerce')<=3])
+            t_cnt=len(rows_ds3[rows_ds3['Pos']=='1'])
             val = {'wins':w_cnt,'poles':p_cnt,'podiums':pod_cnt,'titles':t_cnt}[cat]
             results[d]=val
             lines.append("  {}: {} {}".format(d, val, cat))
         leader=max(results, key=results.get)
-        return "Comparing {}:\n{}\n→ {} leads.".format(cat, '\n'.join(lines), leader)
+        scope = " in {}".format(year) if year else ""
+        return "Comparing {}{}:\n{}\n→ {} leads.".format(cat, scope, '\n'.join(lines), leader)
 
     # ── 24. MOST WINS ALL TIME ────────────────────────────────────────────
     if (any(w in q for w in ['most wins','most races won','all time wins','all-time wins','won most races','won the most races'])
@@ -624,7 +639,10 @@ def query_data(question, dfs):
             n=rs[(rs['Year']==year)&rs['Car'].str.contains(team,case=False,na=False)].shape[0]
             return "{} won {} races in {}.".format(team, n, year)
         if year and not drivers:
-            top=rs[rs['Year']==year].groupby('Car').size().sort_values(ascending=False)
+            if any(w in q for w in ['team','constructor','car']):
+                top=rs[rs['Year']==year].groupby('Car').size().sort_values(ascending=False)
+            else:
+                top=rs[rs['Year']==year].groupby('Winner').size().sort_values(ascending=False)
             return "{} won the most races in {} with {}.".format(top.index[0], year, top.iloc[0])
         if team:
             n=rs[rs['Car'].str.contains(team,case=False,na=False)].shape[0]
@@ -679,9 +697,24 @@ def query_data(question, dfs):
 
     # ── 26a. CHAMPIONSHIP HEAD-TO-HEAD ─────────────────────────────────
     if len(drivers)==2 and any(w in q for w in ['ahead','beat','beaten','finished ahead','ended ahead',
-                                                  'finished higher','higher in the championship',
-                                                  'more championships than','times max','times hamilton']) and not any(w in q for w in ['podium','shared','together']):
-        d1,d2=drivers[0],drivers[1]
+                                                   'finished higher','higher in the championship',
+                                                   'more championships than','times max','times hamilton',
+                                                   'outscored','scored more']) and not any(w in q for w in ['podium','shared','together']):
+        def driver_order_key(driver_name):
+            pos = q.find(driver_name.split()[-1].lower())
+            return pos if pos != -1 else DRIVER_SORT_KEY_FALLBACK
+        ordered = sorted(drivers[:2], key=driver_order_key)
+        d1,d2=ordered[0],ordered[1]
+        if year:
+            y=ds[(ds['Year']==year)&(ds['Driver'].isin([d1,d2]))]
+            p1=float(y[y['Driver']==d1]['PTS'].sum())
+            p2=float(y[y['Driver']==d2]['PTS'].sum())
+            d1_ahead=1 if p1>p2 else 0
+            if d1_ahead == 0:
+                return "{} did not outscore {} in {} ({}: {:.0f} pts, {}: {:.0f} pts).".format(
+                    d1,d2,year,d1,p1,d2,p2)
+            return "{} outscored {} {} time{} in {} ({}: {:.0f} pts, {}: {:.0f} pts).".format(
+                d1,d2,d1_ahead,'' if d1_ahead==1 else 's',year,d1,p1,d2,p2)
         sub=ds[ds['Driver'].isin([d1,d2])]
         piv=sub.pivot_table(index='Year',columns='Driver',values='PTS').dropna()
         if d1 in piv.columns and d2 in piv.columns:
@@ -845,7 +878,7 @@ def query_data(question, dfs):
                 return "Most race starts without ever winning a race:\n{}".format(lines)
 
     # ── 31. POLE POSITIONS ────────────────────────────────────────────────
-    if any(w in q for w in ['pole position','pole positions','poles','on pole']):
+    if any(w in q for w in ['pole position','pole positions','poles','on pole','got pole']):
         if len(drivers)==1:
             d=drivers[0]; rows=dmatch(sg,'Driver',d); rows=rows[rows['Pos']==1]
             return "{} has taken {} pole positions.".format(d, len(rows))
@@ -883,8 +916,20 @@ def query_data(question, dfs):
             return "{} has never finished on the podium at the {} Grand Prix in this dataset.".format(d,gp)
         if len(drivers)==1:
             d=drivers[0]; rows=dmatch(rd,'Driver',d)
+            if yr_start and yr_end:
+                rows=rows[(rows['Year']>=yr_start)&(rows['Year']<=yr_end)]
+                n=len(rows[pd.to_numeric(rows['Pos'],errors='coerce')<=3])
+                return "{} has finished on the podium {} times from {} to {}.".format(d, n, yr_start, yr_end)
+            if year:
+                rows=rows[rows['Year']==year]
+                n=len(rows[pd.to_numeric(rows['Pos'],errors='coerce')<=3])
+                return "{} finished on the podium {} times in {}.".format(d, n, year)
             n=len(rows[pd.to_numeric(rows['Pos'],errors='coerce')<=3])
             return "{} has finished on the podium {} times.".format(d, n)
+        if yr_start and yr_end:
+            top=rd[(rd['Year']>=yr_start)&(rd['Year']<=yr_end)&(pd.to_numeric(rd['Pos'],errors='coerce')<=3)].groupby('Driver').size().sort_values(ascending=False)
+            if len(top):
+                return "{} has the most podium finishes from {} to {} with {}.".format(top.index[0], yr_start, yr_end, top.iloc[0])
         top=rd[pd.to_numeric(rd['Pos'],errors='coerce')<=3].groupby('Driver').size().sort_values(ascending=False)
         m_n=re.search(r'top\s*(\d+)',q)
         if m_n or 'top' in q or 'list' in q or 'rank' in q:
@@ -1001,6 +1046,21 @@ def query_data(question, dfs):
         return "No DNF data found for the specified criteria."
 
     # ── 36. RETIREMENTS / DNF ─────────────────────────────────────────────
+    if any(w in q for w in ['mechanical failure','mechanical failures','mechanical dnf','mechanical dnfs']):
+        mech = rd[(rd['Pos']=='NC') & (rd['Time/Retired'].astype(str).str.upper()=='DNF')]
+        if len(drivers)==1:
+            d=drivers[0]; rows=dmatch(mech,'Driver',d)
+            if year:
+                rows=rows[rows['Year']==year]
+                return "{} had {} DNF-coded retirement{} in {} (this dataset does not include specific retirement causes).".format(d, len(rows), 's' if len(rows)!=1 else '', year)
+            return "{} had {} DNF-coded retirement{} in total (this dataset does not include specific retirement causes).".format(d, len(rows), 's' if len(rows)!=1 else '')
+        if year:
+            top=mech[mech['Year']==year].groupby('Driver').size().sort_values(ascending=False)
+            if len(top): return "Most DNF-coded retirements in {}: {} with {} (specific causes are not available in this dataset).".format(year, top.index[0], top.iloc[0])
+        top=mech.groupby('Driver').size().sort_values(ascending=False)
+        if len(top): return "{} has the most DNF-coded retirements with {} (specific causes are not available in this dataset).".format(top.index[0], top.iloc[0])
+        return "No DNF-coded retirement data found for the specified criteria."
+
     if any(w in q for w in ['dnf','retired from','not classified','did not finish','retirement','retirements']):
         if len(drivers)==1:
             d=drivers[0]; rows=dmatch(rd,'Driver',d); rows=rows[rows['Pos']=='NC']
@@ -1037,6 +1097,10 @@ def query_data(question, dfs):
                                                                        'reached','made it','got into','most']):
         # Only works for 2006+ when Q1/Q2/Q3 format was introduced
         modern=qu[qu['Q1'].notna()&(qu['Q1'].astype(str).str.strip()!='')]
+        if year:
+            modern=modern[modern['Year']==year]
+            if not len(modern):
+                return "No qualifying Q1/Q2/Q3-format data found for {}.".format(year)
         if 'q3' in q:
             if any(w in q for w in ['appearance','appearances','reached','made it','got into']):
                 q3_drivers=modern[modern['Q3'].notna()&(modern['Q3'].astype(str).str.strip()!='')].groupby('Driver').size().sort_values(ascending=False)
@@ -1044,14 +1108,14 @@ def query_data(question, dfs):
                     d=drivers[0]; rows=dmatch(modern[modern['Q3'].notna()&(modern['Q3'].astype(str).str.strip()!='')],'Driver',d)
                     return "{} reached Q3 {} times.".format(d,len(rows))
                 lines="\n".join("  {}: {} times".format(d,c) for d,c in q3_drivers.head(10).items())
-                return "Most Q3 appearances (2006+):\n{}".format(lines)
+                return "Most Q3 appearances{}:\n{}".format(" in {}".format(year) if year else " (2006+)", lines)
             # Q3 exits = made it to Q3 (set a Q3 time, positions 1-10)
             q3_drivers=modern[modern['Q3'].notna()&(modern['Q3'].astype(str).str.strip()!='')].groupby('Driver').size().sort_values(ascending=False)
             if len(drivers)==1:
                 d=drivers[0]; rows=dmatch(modern[modern['Q3'].notna()&(modern['Q3'].astype(str).str.strip()!='')],'Driver',d)
                 return "{} made it to Q3 {} times.".format(d,len(rows))
             lines="\n".join("  {}: {} times".format(d,c) for d,c in q3_drivers.head(10).items())
-            return "Most Q3 appearances (2006+):\n{}".format(lines)
+            return "Most Q3 appearances{}:\n{}".format(" in {}".format(year) if year else " (2006+)", lines)
         if 'q2' in q:
             # Q2 exit = had Q2 time but no Q3 time (eliminated in Q2)
             q2_exit=modern[(modern['Q2'].notna()&(modern['Q2'].astype(str).str.strip()!=''))&(modern['Q3'].isna()|(modern['Q3'].astype(str).str.strip()==''))]
@@ -1060,7 +1124,7 @@ def query_data(question, dfs):
                 return "{} was eliminated in Q2 {} times.".format(d,len(rows))
             top=q2_exit.groupby('Driver').size().sort_values(ascending=False)
             lines="\n".join("  {}: {} times".format(d,c) for d,c in top.head(10).items())
-            return "Most Q2 eliminations (2006+):\n{}".format(lines)
+            return "Most Q2 eliminations{}:\n{}".format(" in {}".format(year) if year else " (2006+)", lines)
         if 'q1' in q:
             # Q1 exit = had Q1 time but no Q2 time (eliminated in Q1)
             q1_exit=modern[(modern['Q1'].notna()&(modern['Q1'].astype(str).str.strip()!=''))&(modern['Q2'].isna()|(modern['Q2'].astype(str).str.strip()==''))]
@@ -1069,7 +1133,7 @@ def query_data(question, dfs):
                 return "{} was eliminated in Q1 {} times.".format(d,len(rows))
             top=q1_exit.groupby('Driver').size().sort_values(ascending=False)
             lines="\n".join("  {}: {} times".format(d,c) for d,c in top.head(10).items())
-            return "Most Q1 eliminations (2006+):\n{}".format(lines)
+            return "Most Q1 eliminations{}:\n{}".format(" in {}".format(year) if year else " (2006+)", lines)
 
     # ── 37. QUALIFYING ────────────────────────────────────────────────────
     if any(w in q for w in ['qualifying','qualify','qualification','quali']):
