@@ -18,6 +18,8 @@ import os, sys, re
 import pandas as pd
 import requests
 
+DRIVER_SORT_KEY_FALLBACK = 10**9
+
 # ─────────────────────────────────────────────
 # SETTINGS
 # ─────────────────────────────────────────────
@@ -698,13 +700,19 @@ def query_data(question, dfs):
                                                    'finished higher','higher in the championship',
                                                    'more championships than','times max','times hamilton',
                                                    'outscored','scored more']) and not any(w in q for w in ['podium','shared','together']):
-        ordered = sorted(drivers[:2], key=lambda d: q.find(d.split()[-1].lower()) if q.find(d.split()[-1].lower())!=-1 else 10**9)
+        def driver_order_key(driver_name):
+            pos = q.find(driver_name.split()[-1].lower())
+            return pos if pos != -1 else DRIVER_SORT_KEY_FALLBACK
+        ordered = sorted(drivers[:2], key=driver_order_key)
         d1,d2=ordered[0],ordered[1]
         if year:
-            y=sub=ds[(ds['Year']==year)&(ds['Driver'].isin([d1,d2]))]
+            y=ds[(ds['Year']==year)&(ds['Driver'].isin([d1,d2]))]
             p1=float(y[y['Driver']==d1]['PTS'].sum())
             p2=float(y[y['Driver']==d2]['PTS'].sum())
             d1_ahead=1 if p1>p2 else 0
+            if d1_ahead == 0:
+                return "{} did not outscore {} in {} ({}: {:.0f} pts, {}: {:.0f} pts).".format(
+                    d1,d2,year,d1,p1,d2,p2)
             return "{} outscored {} {} time{} in {} ({}: {:.0f} pts, {}: {:.0f} pts).".format(
                 d1,d2,d1_ahead,'' if d1_ahead==1 else 's',year,d1,p1,d2,p2)
         sub=ds[ds['Driver'].isin([d1,d2])]
@@ -1038,6 +1046,21 @@ def query_data(question, dfs):
         return "No DNF data found for the specified criteria."
 
     # ── 36. RETIREMENTS / DNF ─────────────────────────────────────────────
+    if any(w in q for w in ['mechanical failure','mechanical failures','mechanical dnf','mechanical dnfs']):
+        mech = rd[(rd['Pos']=='NC') & (rd['Time/Retired'].astype(str).str.upper()=='DNF')]
+        if len(drivers)==1:
+            d=drivers[0]; rows=dmatch(mech,'Driver',d)
+            if year:
+                rows=rows[rows['Year']==year]
+                return "{} had {} DNF-coded retirement{} in {} (this dataset does not include specific retirement causes).".format(d, len(rows), 's' if len(rows)!=1 else '', year)
+            return "{} had {} DNF-coded retirement{} in total (this dataset does not include specific retirement causes).".format(d, len(rows), 's' if len(rows)!=1 else '')
+        if year:
+            top=mech[mech['Year']==year].groupby('Driver').size().sort_values(ascending=False)
+            if len(top): return "Most DNF-coded retirements in {}: {} with {} (specific causes are not available in this dataset).".format(year, top.index[0], top.iloc[0])
+        top=mech.groupby('Driver').size().sort_values(ascending=False)
+        if len(top): return "{} has the most DNF-coded retirements with {} (specific causes are not available in this dataset).".format(top.index[0], top.iloc[0])
+        return "No DNF-coded retirement data found for the specified criteria."
+
     if any(w in q for w in ['dnf','retired from','not classified','did not finish','retirement','retirements']):
         if len(drivers)==1:
             d=drivers[0]; rows=dmatch(rd,'Driver',d); rows=rows[rows['Pos']=='NC']
